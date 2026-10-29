@@ -33,7 +33,9 @@
   <p>
     Ande pela sala ou teleporte com o <b>gatilho do controle esquerdo</b>.<br>
     Pegue o jornal na mesa com o <b>botão lateral (grip)</b>, com o <b>gatilho direito</b>
-    ou fazendo <b>pinça com os dedos</b> para ouvir as notícias. Solte para pausar.
+    ou fazendo <b>pinça com os dedos</b> para ouvir as notícias. Solte para pausar.<br>
+    O <b>rádio</b> na mesa toca o Jornal do Dia: aponte e aperte o <b>gatilho direito</b>,
+    encoste e aperte o <b>grip</b> ou faça <b>pinça</b> perto dele para tocar/pausar.
   </p>
   <button id="enterVR" disabled>Verificando suporte a VR…</button>
 </div>
@@ -151,11 +153,230 @@ audio.preload = 'auto';
 // O navegador só deixa tocar áudio depois de um gesto do usuário;
 // usamos o clique em "Entrar em VR" para liberar.
 function unlockAudio() {
-  audio.muted = true;
-  audio.play()
-    .then(() => { audio.pause(); audio.currentTime = 0; audio.muted = false; })
-    .catch(() => { audio.muted = false; });
+  for (const a of [audio, radioAudio]) {
+    if (!a.src) continue;
+    a.muted = true;
+    a.play()
+      .then(() => { a.pause(); a.currentTime = 0; a.muted = false; })
+      .catch(() => { a.muted = false; });
+  }
 }
+
+// ---------- Monitor na mesa ----------
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, roughness: 0.5, metalness: 0.3 });
+const monitorCanvas = makeCanvas(1024, 576);
+const monitorTex = canvasTexture(monitorCanvas);
+
+const monitor = new THREE.Group();
+monitor.position.set(TABLE.x, TABLE.h, TABLE.z - 0.25);
+const monBase = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.012, 0.15), darkMat);
+monBase.position.y = 0.006;
+const monNeck = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.025), darkMat);
+monNeck.position.set(0, 0.11, -0.035);
+const monFrame = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.38, 0.025), darkMat);
+monFrame.position.set(0, 0.32, -0.02);
+monFrame.castShadow = true;
+const monScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.3375), new THREE.MeshBasicMaterial({ map: monitorTex }));
+monScreen.position.set(0, 0.32, -0.02 + 0.0126); // de frente para +z
+monitor.add(monBase, monNeck, monFrame, monScreen);
+scene.add(monitor);
+
+// ---------- Quadro de avisos (parede do fundo) ----------
+const BOARD = { x: -1.3, y: 1.55, w: 1.6, h: 1.0 };
+const boardCanvas = makeCanvas(1024, 640);
+const boardTex = canvasTexture(boardCanvas);
+
+const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(BOARD.w + 0.08, BOARD.h + 0.08, 0.03), woodMat);
+boardFrame.position.set(BOARD.x, BOARD.y, -ROOM_D / 2 + 0.015);
+const boardSurface = new THREE.Mesh(
+  new THREE.PlaneGeometry(BOARD.w, BOARD.h),
+  new THREE.MeshStandardMaterial({ map: boardTex, roughness: 0.9 })
+);
+boardSurface.position.set(BOARD.x, BOARD.y, -ROOM_D / 2 + 0.031);
+scene.add(boardFrame, boardSurface);
+
+// ---------- Relógio e calendário (parede do fundo, à direita) ----------
+const CLOCK = { x: 1.35, y: 1.95, r: 0.22 };
+const clock3d = new THREE.Group();
+clock3d.position.set(CLOCK.x, CLOCK.y, -ROOM_D / 2 + 0.02);
+const clockFace = new THREE.Mesh(
+  new THREE.CircleGeometry(CLOCK.r, 48),
+  new THREE.MeshStandardMaterial({ map: canvasTexture(clockFaceCanvas()), roughness: 0.8 })
+);
+const clockRim = new THREE.Mesh(new THREE.RingGeometry(CLOCK.r, CLOCK.r + 0.02, 48), metalMat);
+clock3d.add(clockFace, clockRim);
+
+// Ponteiros são meshes girando (sem redesenhar textura)
+function clockHand(len, width, color, z) {
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(width, len, 0.004).translate(0, len / 2 - 0.02, 0),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.6 })
+  );
+  m.position.z = z;
+  clock3d.add(m);
+  return m;
+}
+const hourHand = clockHand(CLOCK.r * 0.55, 0.014, 0x222222, 0.004);
+const minuteHand = clockHand(CLOCK.r * 0.8, 0.009, 0x222222, 0.008);
+const secondHand = clockHand(CLOCK.r * 0.85, 0.003, 0xc0392b, 0.012);
+scene.add(clock3d);
+
+const CAL = { x: 1.35, y: 1.15, w: 0.62, h: 0.56 };
+const calendarCanvas = makeCanvas(512, 462);
+const calendarTex = canvasTexture(calendarCanvas);
+const calendar = new THREE.Mesh(
+  new THREE.PlaneGeometry(CAL.w, CAL.h),
+  new THREE.MeshStandardMaterial({ map: calendarTex, roughness: 0.9 })
+);
+calendar.position.set(CAL.x, CAL.y, -ROOM_D / 2 + 0.01);
+scene.add(calendar);
+
+function updateClock(now) {
+  const s = now.getSeconds();
+  const m = now.getMinutes() + s / 60;
+  const h = (now.getHours() % 12) + m / 60;
+  hourHand.rotation.z = -(h / 12) * Math.PI * 2;
+  minuteHand.rotation.z = -(m / 60) * Math.PI * 2;
+  secondHand.rotation.z = -(s / 60) * Math.PI * 2;
+}
+
+// Só redesenha quando muda: ponteiros 1x/s, monitor 1x/min, calendário 1x/dia
+let lastSecond = -1, lastMinute = -1, lastDay = -1;
+function updateTime() {
+  const now = new Date();
+  if (now.getSeconds() === lastSecond) return;
+  lastSecond = now.getSeconds();
+  updateClock(now);
+  if (now.getMinutes() !== lastMinute) { lastMinute = now.getMinutes(); drawMonitor(now); }
+  if (now.getDate() !== lastDay) { lastDay = now.getDate(); drawCalendar(now); }
+}
+
+// ---------- Painel (conteúdo vem de painel.json) ----------
+let painel = null;                      // { avisos: [...], metas: [...] }
+let painelMsg = 'Carregando painel.json…'; // mostrado enquanto não há dados (ou em caso de erro)
+
+function normalizePainel(d) {
+  return {
+    avisos: Array.isArray(d?.avisos) ? d.avisos.map(String) : [],
+    metas: Array.isArray(d?.metas)
+      ? d.metas.map((m) => ({ nome: String(m?.nome ?? ''), atual: Number(m?.atual) || 0, alvo: Number(m?.alvo) || 0 }))
+      : [],
+  };
+}
+
+drawBoard();
+fetch('painel.json', { cache: 'no-store' })
+  .then((r) => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json().catch(() => { painelMsg = 'painel.json com erro de formato'; throw new Error('JSON inválido'); });
+  })
+  .then((d) => { painel = normalizePainel(d); })
+  .catch((err) => {
+    console.warn('Não foi possível carregar painel.json:', err);
+    if (!painel && painelMsg.startsWith('Carregando')) painelMsg = 'painel.json não encontrado';
+  })
+  .finally(() => { drawBoard(); drawMonitor(new Date()); });
+
+// ---------- Rádio na mesa (Jornal do Dia) ----------
+const JORNAL_URL = 'https://jornal.sunelenergias.com.br/';
+const JORNAL_PARTES = ['parte-1.m4a', 'parte-2.m4a']; // edição completa, nesta ordem
+const radioAudio = new Audio();
+radioAudio.preload = 'metadata';
+const radioState = { status: 'procurando', data: null, parte: 0, urls: [] };
+
+const radio = new THREE.Group();
+radio.position.set(TABLE.x + 0.47, TABLE.h, TABLE.z - 0.15);
+radio.rotation.y = -0.35; // virado para quem está na frente da mesa
+const radioBody = new THREE.Mesh(
+  new THREE.BoxGeometry(0.24, 0.13, 0.09),
+  new THREE.MeshStandardMaterial({ color: 0x8c2f2a, roughness: 0.55 })
+);
+radioBody.position.y = 0.065;
+radioBody.castShadow = true;
+const radioSpeaker = new THREE.Mesh(new THREE.CircleGeometry(0.038, 24), darkMat);
+radioSpeaker.position.set(-0.07, 0.065, 0.0455);
+const radioCanvas = makeCanvas(512, 192);
+const radioTex = canvasTexture(radioCanvas);
+const radioDisplay = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.045), new THREE.MeshBasicMaterial({ map: radioTex }));
+radioDisplay.position.set(0.045, 0.085, 0.0455);
+const radioKnob = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.012, 16).rotateX(Math.PI / 2), metalMat);
+radioKnob.position.set(0.045, 0.035, 0.05);
+const radioAntenna = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.22, 8), metalMat);
+radioAntenna.position.set(0.09, 0.13 + 0.1, -0.02);
+radioAntenna.rotation.z = -0.35;
+radio.add(radioBody, radioSpeaker, radioDisplay, radioKnob, radioAntenna);
+scene.add(radio);
+
+function isoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Testa se um áudio existe carregando só os metadados (o site não libera CORS para fetch)
+function probeAudio(url) {
+  return new Promise((resolve) => {
+    const a = new Audio();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      a.removeAttribute('src');
+      a.load();
+      resolve(ok);
+    };
+    a.preload = 'metadata';
+    a.addEventListener('loadedmetadata', () => finish(true));
+    a.addEventListener('error', () => finish(false));
+    setTimeout(() => finish(false), 8000);
+    a.src = url;
+  });
+}
+
+// Procura a edição mais recente: hoje e até 7 dias para trás
+async function findEdition() {
+  const bust = '?t=' + Date.now(); // evita 404 guardado em cache de antes da publicação
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const base = JORNAL_URL + isoDate(d) + '/';
+    if (await probeAudio(base + JORNAL_PARTES[0] + bust)) {
+      radioState.data = d;
+      radioState.urls = JORNAL_PARTES.map((p) => base + p + bust);
+      break;
+    }
+  }
+  if (!radioState.urls.length) radioState.urls = ['jornal-hoje.mp3']; // fallback local
+  radioState.status = 'pronto';
+  radioState.parte = 0;
+  radioAudio.src = radioState.urls[0];
+  drawRadioDisplay();
+}
+findEdition();
+
+function toggleRadio() {
+  if (radioState.status !== 'pronto') return;
+  if (radioAudio.paused) {
+    audio.pause(); // um áudio por vez
+    radioAudio.play().catch((err) => console.warn('Não foi possível tocar o rádio:', err));
+  } else {
+    radioAudio.pause();
+  }
+}
+
+// Ao terminar a Parte 1, emenda a Parte 2
+radioAudio.addEventListener('ended', () => {
+  if (radioState.parte + 1 < radioState.urls.length) {
+    radioState.parte++;
+    radioAudio.src = radioState.urls[radioState.parte];
+    radioAudio.play().catch((err) => console.warn('Não foi possível tocar o rádio:', err));
+  } else {
+    radioState.parte = 0;
+    radioAudio.src = radioState.urls[0];
+  }
+  drawRadioDisplay();
+});
+radioAudio.addEventListener('play', drawRadioDisplay);
+radioAudio.addEventListener('pause', drawRadioDisplay);
+drawRadioDisplay();
 
 // ---------- Botão "Entrar em VR" ----------
 const overlay = document.getElementById('overlay');
@@ -218,7 +439,7 @@ function teleportTo(p) {
 const raycaster = new THREE.Raycaster();
 const tmpMat = new THREE.Matrix4();
 const tmpVec = new THREE.Vector3();
-const jornalBox = new THREE.Box3();
+const targetBox = new THREE.Box3();
 const GRAB_DIST = 0.12; // metros
 
 function setRayFrom(obj) {
@@ -231,18 +452,30 @@ let holder = null;        // { input, button } de quem está segurando o jornal
 let teleportInput = null; // controle esquerdo enquanto o gatilho está pressionado
 let falling = false, fallSpeed = 0;
 
-function tryGrab(input, holderObj, point, button, allowRay) {
-  if (holder) return;
-  jornalBox.setFromObject(jornal);
-  let ok = jornalBox.distanceToPoint(point) < GRAB_DIST;
-  if (!ok && allowRay) {
-    setRayFrom(input.controller);
-    ok = raycaster.intersectObject(jornal).length > 0;
+// Decide o que o gesto atinge: o objeto mais próximo da mão (jornal ou rádio)
+// ou, se permitido, o primeiro que o raio do controle acerta.
+function pickTarget(input, point, allowRay) {
+  const candidates = holder ? [radio] : [jornal, radio];
+  let best = null, bestDist = GRAB_DIST;
+  for (const obj of candidates) {
+    const d = targetBox.setFromObject(obj).distanceToPoint(point);
+    if (d < bestDist) { best = obj; bestDist = d; }
   }
-  if (!ok) return;
+  if (best || !allowRay) return best;
+  setRayFrom(input.controller);
+  const hit = raycaster.intersectObjects(candidates, true)[0];
+  if (!hit) return null;
+  return hit.object === jornal ? jornal : radio;
+}
+
+function tryGrab(input, holderObj, point, button, allowRay) {
+  const target = pickTarget(input, point, allowRay);
+  if (target === radio) { toggleRadio(); return; } // rádio é botão, não se pega
+  if (target !== jornal) return;
   holderObj.attach(jornal);
   holder = { input, button };
   falling = false;
+  radioAudio.pause(); // um áudio por vez
   audio.play().catch((err) => console.warn('Não foi possível tocar o áudio:', err));
 }
 
@@ -289,7 +522,7 @@ for (let i = 0; i < 2; i++) {
     input.pinching = false;
   });
 
-  // Gatilho: esquerdo teleporta, direito pega (de perto ou mirando)
+  // Gatilho: esquerdo teleporta, direito pega o jornal ou liga/desliga o rádio (de perto ou mirando)
   controller.addEventListener('selectstart', () => {
     if (input.isHand) return;
     if (input.handedness === 'left') {
@@ -371,6 +604,7 @@ renderer.setAnimationLoop(() => {
   updateHands();
   updateTeleport();
   updateFalling(dt);
+  updateTime();
   renderer.render(scene, camera);
 });
 
@@ -431,6 +665,240 @@ function jornalTexture() {
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
   return t;
+}
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+function canvasTexture(c) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+// Quebra o texto em linhas que caibam em maxW
+function wrapLines(g, text, maxW) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    const test = line ? line + ' ' + word : word;
+    if (line && g.measureText(test).width > maxW) { lines.push(line); line = word; } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Lista de avisos com marcador; para quando passa de maxY
+function drawAvisos(g, avisos, x, y, w, maxY, s) {
+  g.font = s.font;
+  g.fillStyle = s.color;
+  g.textAlign = 'left';
+  if (!avisos.length) { g.fillText('(sem avisos)', x, y); return; }
+  for (const aviso of avisos) {
+    const lines = wrapLines(g, aviso, w - 30);
+    if (y + (lines.length - 1) * s.lineH > maxY) { g.fillText('…', x + 30, y); return; }
+    g.fillStyle = s.bullet;
+    g.beginPath(); g.arc(x + 8, y - s.lineH * 0.3, 7, 0, Math.PI * 2); g.fill();
+    g.fillStyle = s.color;
+    for (const l of lines) { g.fillText(l, x + 30, y); y += s.lineH; }
+    y += s.lineH * 0.35;
+  }
+}
+
+// Metas com nome, números e barra de progresso
+function drawMetas(g, metas, x, y, w, maxY, s) {
+  g.textAlign = 'left';
+  if (!metas.length) { g.font = s.font; g.fillStyle = s.color; g.fillText('(sem metas)', x, y); return; }
+  for (const m of metas) {
+    if (y + s.lineH + 26 > maxY) { g.fillStyle = s.color; g.fillText('…', x, y); return; }
+    const pct = m.alvo > 0 ? THREE.MathUtils.clamp(m.atual / m.alvo, 0, 1) : 0;
+    g.font = s.font;
+    g.fillStyle = s.color;
+    const nome = wrapLines(g, m.nome, w - 20);
+    g.fillText((nome[0] || '') + (nome.length > 1 ? '…' : ''), x, y);
+    g.font = s.small;
+    g.fillStyle = s.muted;
+    g.fillText(`${m.atual.toLocaleString('pt-BR')} de ${m.alvo.toLocaleString('pt-BR')} (${Math.round(pct * 100)}%)`, x, y + s.lineH * 0.85);
+    const by = y + s.lineH * 1.15;
+    g.fillStyle = s.barBg;
+    g.fillRect(x, by, w, 18);
+    g.fillStyle = s.barFg;
+    g.fillRect(x, by, w * pct, 18);
+    y = by + 18 + s.lineH;
+  }
+}
+
+function drawMonitor(now) {
+  const g = monitorCanvas.getContext('2d');
+  const W = monitorCanvas.width, H = monitorCanvas.height;
+  g.fillStyle = '#121a22';
+  g.fillRect(0, 0, W, H);
+
+  // Cabeçalho: título, data e hora
+  g.fillStyle = '#1d6b52';
+  g.fillRect(0, 0, W, 96);
+  g.fillStyle = '#fff';
+  g.textAlign = 'left';
+  g.font = 'bold 48px system-ui, sans-serif';
+  g.fillText('Painel Sunel', 32, 64);
+  g.textAlign = 'right';
+  g.font = 'bold 52px system-ui, sans-serif';
+  g.fillText(now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), W - 32, 66);
+  g.font = '24px system-ui, sans-serif';
+  g.fillStyle = '#d6efe6';
+  g.fillText(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }), W - 200, 62);
+
+  if (!painel) {
+    g.textAlign = 'center';
+    g.fillStyle = '#ffb4a8';
+    g.font = 'bold 40px system-ui, sans-serif';
+    g.fillText(painelMsg, W / 2, H / 2 + 30);
+  } else {
+    g.textAlign = 'left';
+    g.fillStyle = '#7fd8b5';
+    g.font = 'bold 30px system-ui, sans-serif';
+    g.fillText('Avisos', 32, 148);
+    g.fillText('Metas', 560, 148);
+    g.fillStyle = '#2a3642';
+    g.fillRect(530, 120, 2, H - 170);
+    const st = { font: '24px system-ui, sans-serif', small: '20px system-ui, sans-serif', lineH: 32,
+      color: '#e8edf2', muted: '#9fb0bf', bullet: '#2fd8a0', barBg: '#2a3642', barFg: '#2fd8a0' };
+    drawAvisos(g, painel.avisos, 32, 192, 470, H - 60, st);
+    drawMetas(g, painel.metas, 560, 192, 430, H - 50, st);
+  }
+  g.textAlign = 'left';
+  g.fillStyle = '#5d6d7c';
+  g.font = '18px system-ui, sans-serif';
+  g.fillText('Conteúdo de painel.json', 32, H - 18);
+  monitorTex.needsUpdate = true;
+}
+
+function drawBoard() {
+  const g = boardCanvas.getContext('2d');
+  const W = boardCanvas.width, H = boardCanvas.height;
+  g.fillStyle = '#f7f4ec';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#1f2a33';
+  g.textAlign = 'center';
+  g.font = 'bold 54px Georgia, serif';
+  g.fillText('Quadro de avisos', W / 2, 70);
+  g.fillRect(40, 92, W - 80, 3);
+
+  if (!painel) {
+    g.fillStyle = '#b03a2e';
+    g.font = 'bold 44px system-ui, sans-serif';
+    g.fillText(painelMsg, W / 2, H / 2 + 20);
+  } else {
+    g.textAlign = 'left';
+    g.fillStyle = '#1d6b52';
+    g.font = 'bold 34px system-ui, sans-serif';
+    g.fillText('Avisos', 48, 150);
+    g.fillText('Metas', 580, 150);
+    const st = { font: '28px system-ui, sans-serif', small: '23px system-ui, sans-serif', lineH: 36,
+      color: '#1f2a33', muted: '#5d6d7c', bullet: '#e0a526', barBg: '#ddd6c6', barFg: '#2f8f6f' };
+    drawAvisos(g, painel.avisos, 48, 200, 500, H - 30, st);
+    drawMetas(g, painel.metas, 580, 200, 400, H - 20, st);
+  }
+  boardTex.needsUpdate = true;
+}
+
+function clockFaceCanvas() {
+  const c = makeCanvas(512, 512);
+  const g = c.getContext('2d');
+  g.fillStyle = '#fbfaf6';
+  g.fillRect(0, 0, 512, 512);
+  g.translate(256, 256);
+  g.fillStyle = '#222';
+  for (let i = 0; i < 60; i++) {
+    const big = i % 5 === 0;
+    g.save();
+    g.rotate((i / 60) * Math.PI * 2);
+    g.fillRect(big ? -5 : -2, -246, big ? 10 : 4, big ? 34 : 14);
+    g.restore();
+  }
+  g.font = 'bold 52px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  for (let n = 1; n <= 12; n++) {
+    const a = (n / 12) * Math.PI * 2;
+    g.fillText(String(n), Math.sin(a) * 170, -Math.cos(a) * 170);
+  }
+  return c;
+}
+
+function drawCalendar(now) {
+  const g = calendarCanvas.getContext('2d');
+  const W = calendarCanvas.width, H = calendarCanvas.height;
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#1d6b52';
+  g.fillRect(0, 0, W, 72);
+
+  const mes = now.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  g.fillStyle = '#fff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = 'bold 38px system-ui, sans-serif';
+  g.fillText(mes.charAt(0).toUpperCase() + mes.slice(1), W / 2, 38);
+
+  // Semana começando no domingo
+  const colW = W / 7, top = 100, rowH = 58;
+  g.font = 'bold 24px system-ui, sans-serif';
+  ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].forEach((d, i) => {
+    g.fillStyle = i === 0 ? '#b03a2e' : '#5d6d7c';
+    g.fillText(d, colW * i + colW / 2, top);
+  });
+
+  const first = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  g.font = '28px system-ui, sans-serif';
+  for (let d = 1; d <= days; d++) {
+    const cell = first + d - 1;
+    const cx = colW * (cell % 7) + colW / 2;
+    const cy = top + 50 + Math.floor(cell / 7) * rowH;
+    if (d === now.getDate()) {
+      g.fillStyle = '#2f8f6f';
+      g.beginPath(); g.arc(cx, cy, 25, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#fff';
+      g.font = 'bold 28px system-ui, sans-serif';
+    } else {
+      g.fillStyle = cell % 7 === 0 ? '#b03a2e' : '#1f2a33';
+      g.font = '28px system-ui, sans-serif';
+    }
+    g.fillText(String(d), cx, cy);
+  }
+  g.textBaseline = 'alphabetic';
+  calendarTex.needsUpdate = true;
+}
+
+function drawRadioDisplay() {
+  const g = radioCanvas.getContext('2d');
+  const W = radioCanvas.width, H = radioCanvas.height;
+  g.fillStyle = '#0c1a12';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#7dffb0';
+  g.textAlign = 'center';
+  g.font = 'bold 36px system-ui, sans-serif';
+  g.fillText('JORNAL DO DIA', W / 2, 46);
+
+  let linha = 'procurando…', estado = '';
+  if (radioState.status === 'pronto') {
+    linha = radioState.data
+      ? `edição ${radioState.data.toLocaleDateString('pt-BR')}`
+      : 'sem edição';
+    const parte = radioState.data ? ` · parte ${radioState.parte + 1}` : '';
+    estado = radioAudio.paused ? '❚❚ pausado' + parte : '▶ tocando' + parte;
+  }
+  g.font = 'bold 44px system-ui, sans-serif';
+  g.fillText(linha, W / 2, 112);
+  g.font = '30px system-ui, sans-serif';
+  g.fillStyle = '#4fbf80';
+  g.fillText(estado, W / 2, 166);
+  radioTex.needsUpdate = true;
 }
 </script>
 </body>

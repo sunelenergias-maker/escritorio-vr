@@ -1,0 +1,13 @@
+{
+  "_comentario": "ARQUIVO DE EXEMPLO. Edite os avisos e metas abaixo; o quadro e o monitor do Escritório VR leem este arquivo ao abrir a página.",
+  "avisos": [
+    "Exemplo — edite painel.json para trocar estes avisos",
+    "Exemplo: reunião de equipe na segunda-feira às 9h",
+    "Exemplo: lembrar de conferir as pendências da semana"
+  ],
+  "metas": [
+    { "nome": "Exemplo — meta A (edite painel.json)", "atual": 30, "alvo": 100 },
+    { "nome": "Exemplo — meta B", "atual": 7, "alvo": 10 },
+    { "nome": "Exemplo — meta C", "atual": 0, "alvo": 50 }
+  ]
+}
