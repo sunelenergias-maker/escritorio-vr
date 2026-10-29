@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escritório VR</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f24; font-family: system-ui, sans-serif; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 16px; text-align: center; color: #f2f2f2; background: rgba(15, 18, 22, 0.72);
+  }
+  #overlay h1 { margin: 0; font-size: 30px; }
+  #overlay p { margin: 0; max-width: 480px; line-height: 1.5; color: #c9ced6; }
+  #enterVR {
+    font-size: 20px; padding: 14px 34px; border: 0; border-radius: 10px;
+    background: #2f8f6f; color: #fff; cursor: pointer;
+  }
+  #enterVR:disabled { background: #555; cursor: default; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="overlay">
+  <h1>Escritório VR</h1>
+  <p>
+    Ande pela sala ou teleporte com o <b>gatilho do controle esquerdo</b>.<br>
+    Pegue o jornal na mesa com o <b>botão lateral (grip)</b>, com o <b>gatilho direito</b>
+    ou fazendo <b>pinça com os dedos</b> para ouvir as notícias. Solte para pausar.
+  </p>
+  <button id="enterVR" disabled>Verificando suporte a VR…</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+
+// ---------- Renderizador, cena e câmera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1f24);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 50);
+camera.position.set(0, 1.6, 0.6);
+camera.lookAt(0, 0.8, -1.2);
+
+// ---------- Sala ----------
+const ROOM_W = 6, ROOM_D = 6, ROOM_H = 2.8;
+const TABLE = { x: 0, z: -1.2, w: 1.4, d: 0.75, h: 0.75 };
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(ROOM_W, ROOM_D),
+  new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: 0.8 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const wallMat = new THREE.MeshStandardMaterial({ color: 0xe9e4da, roughness: 0.95 });
+function wall(width, x, z, rotY) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(width, ROOM_H), wallMat);
+  m.position.set(x, ROOM_H / 2, z);
+  m.rotation.y = rotY;
+  m.receiveShadow = true;
+  scene.add(m);
+}
+wall(ROOM_W, 0, -ROOM_D / 2, 0);
+wall(ROOM_W, 0, ROOM_D / 2, Math.PI);
+wall(ROOM_D, -ROOM_W / 2, 0, Math.PI / 2);
+wall(ROOM_D, ROOM_W / 2, 0, -Math.PI / 2);
+
+const ceiling = new THREE.Mesh(
+  new THREE.PlaneGeometry(ROOM_W, ROOM_D),
+  new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 1 })
+);
+ceiling.rotation.x = Math.PI / 2;
+ceiling.position.y = ROOM_H;
+scene.add(ceiling);
+
+// Luminária de teto (painel que "brilha")
+const lampPanel = new THREE.Mesh(
+  new THREE.BoxGeometry(1.2, 0.04, 0.6),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff4e0, emissiveIntensity: 1.5 })
+);
+lampPanel.position.set(TABLE.x, ROOM_H - 0.02, TABLE.z + 0.2);
+scene.add(lampPanel);
+
+// ---------- Mesa ----------
+const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.6 });
+const metalMat = new THREE.MeshStandardMaterial({ color: 0x333840, roughness: 0.4, metalness: 0.7 });
+
+const tableTop = new THREE.Mesh(new THREE.BoxGeometry(TABLE.w, 0.04, TABLE.d), woodMat);
+tableTop.position.set(TABLE.x, TABLE.h - 0.02, TABLE.z);
+tableTop.castShadow = tableTop.receiveShadow = true;
+scene.add(tableTop);
+
+for (const sx of [-1, 1]) {
+  for (const sz of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.05, TABLE.h - 0.04, 0.05), metalMat);
+    leg.position.set(TABLE.x + sx * (TABLE.w / 2 - 0.06), (TABLE.h - 0.04) / 2, TABLE.z + sz * (TABLE.d / 2 - 0.06));
+    leg.castShadow = true;
+    scene.add(leg);
+  }
+}
+
+// ---------- Iluminação ----------
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7a66, 1.2));
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+keyLight.position.set(1.5, ROOM_H - 0.2, 0.5);
+keyLight.target.position.set(TABLE.x, TABLE.h, TABLE.z);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024, 1024);
+Object.assign(keyLight.shadow.camera, { left: -2, right: 2, top: 2, bottom: -2, near: 0.5, far: 6 });
+scene.add(keyLight, keyLight.target);
+
+const lampLight = new THREE.PointLight(0xfff1dd, 10, 8, 2);
+lampLight.position.set(TABLE.x, ROOM_H - 0.15, TABLE.z + 0.2);
+scene.add(lampLight);
+
+// ---------- Jornal ----------
+const paperSide = new THREE.MeshStandardMaterial({ color: 0xf3efe4, roughness: 0.9 });
+const paperTop = new THREE.MeshStandardMaterial({ map: jornalTexture(), roughness: 0.9 });
+const jornal = new THREE.Mesh(
+  new THREE.BoxGeometry(0.3, 0.012, 0.42),
+  [paperSide, paperSide, paperTop, paperTop, paperSide, paperSide]
+);
+jornal.position.set(TABLE.x, TABLE.h + 0.006, TABLE.z + 0.05);
+jornal.rotation.y = 0.2;
+jornal.castShadow = true;
+scene.add(jornal);
+
+// ---------- Áudio ----------
+const audio = new Audio('jornal-hoje.mp3');
+audio.preload = 'auto';
+
+// O navegador só deixa tocar áudio depois de um gesto do usuário;
+// usamos o clique em "Entrar em VR" para liberar.
+function unlockAudio() {
+  audio.muted = true;
+  audio.play()
+    .then(() => { audio.pause(); audio.currentTime = 0; audio.muted = false; })
+    .catch(() => { audio.muted = false; });
+}
+
+// ---------- Botão "Entrar em VR" ----------
+const overlay = document.getElementById('overlay');
+const btn = document.getElementById('enterVR');
+
+if (!navigator.xr) {
+  btn.textContent = 'WebXR indisponível (abra via HTTPS no navegador do Quest)';
+} else {
+  navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
+    btn.disabled = !ok;
+    btn.textContent = ok ? 'Entrar em VR' : 'VR não suportado neste dispositivo';
+  });
+}
+
+btn.addEventListener('click', async () => {
+  unlockAudio();
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+    });
+    session.addEventListener('end', () => { overlay.style.display = 'flex'; });
+    await renderer.xr.setSession(session);
+    overlay.style.display = 'none';
+  } catch (err) {
+    btn.textContent = 'Erro ao iniciar VR: ' + err.message;
+  }
+});
+
+// ---------- Teleporte ----------
+let baseReferenceSpace = null;
+const playerOffset = new THREE.Vector3();
+
+renderer.xr.addEventListener('sessionstart', () => {
+  baseReferenceSpace = renderer.xr.getReferenceSpace();
+  playerOffset.set(0, 0, 0);
+});
+
+const marker = new THREE.Mesh(
+  new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0x2fd8a0 })
+);
+marker.visible = false;
+scene.add(marker);
+
+function insideTable(p) {
+  return Math.abs(p.x - TABLE.x) < TABLE.w / 2 + 0.3 && Math.abs(p.z - TABLE.z) < TABLE.d / 2 + 0.3;
+}
+
+function teleportTo(p) {
+  if (!baseReferenceSpace) return;
+  // Desloca o espaço de referência para que a cabeça do usuário fique sobre o ponto escolhido
+  const head = new THREE.Vector3().setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+  playerOffset.x += p.x - head.x;
+  playerOffset.z += p.z - head.z;
+  const transform = new XRRigidTransform({ x: -playerOffset.x, y: 0, z: -playerOffset.z, w: 1 });
+  renderer.xr.setReferenceSpace(baseReferenceSpace.getOffsetReferenceSpace(transform));
+}
+
+// ---------- Controles e mãos ----------
+const raycaster = new THREE.Raycaster();
+const tmpMat = new THREE.Matrix4();
+const tmpVec = new THREE.Vector3();
+const jornalBox = new THREE.Box3();
+const GRAB_DIST = 0.12; // metros
+
+function setRayFrom(obj) {
+  tmpMat.identity().extractRotation(obj.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(obj.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpMat);
+}
+
+let holder = null;        // { input, button } de quem está segurando o jornal
+let teleportInput = null; // controle esquerdo enquanto o gatilho está pressionado
+let falling = false, fallSpeed = 0;
+
+function tryGrab(input, holderObj, point, button, allowRay) {
+  if (holder) return;
+  jornalBox.setFromObject(jornal);
+  let ok = jornalBox.distanceToPoint(point) < GRAB_DIST;
+  if (!ok && allowRay) {
+    setRayFrom(input.controller);
+    ok = raycaster.intersectObject(jornal).length > 0;
+  }
+  if (!ok) return;
+  holderObj.attach(jornal);
+  holder = { input, button };
+  falling = false;
+  audio.play().catch((err) => console.warn('Não foi possível tocar o áudio:', err));
+}
+
+function release() {
+  scene.attach(jornal);
+  holder = null;
+  audio.pause();
+  // Mantém dentro da sala e deixa cair
+  jornal.position.x = THREE.MathUtils.clamp(jornal.position.x, -ROOM_W / 2 + 0.2, ROOM_W / 2 - 0.2);
+  jornal.position.z = THREE.MathUtils.clamp(jornal.position.z, -ROOM_D / 2 + 0.2, ROOM_D / 2 - 0.2);
+  falling = true;
+  fallSpeed = 0;
+}
+
+const controllerModelFactory = new XRControllerModelFactory();
+const handModelFactory = new XRHandModelFactory();
+const rayGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
+const inputs = [];
+
+for (let i = 0; i < 2; i++) {
+  const controller = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  const hand = renderer.xr.getHand(i);
+
+  const ray = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
+  ray.scale.z = 3;
+  controller.add(ray);
+  grip.add(controllerModelFactory.createControllerModel(grip));
+  hand.add(handModelFactory.createHandModel(hand, 'mesh'));
+  scene.add(controller, grip, hand);
+
+  const input = { controller, grip, hand, ray, handedness: '', isHand: false, pinching: false };
+  inputs.push(input);
+
+  controller.addEventListener('connected', (e) => {
+    input.handedness = e.data.handedness;
+    input.isHand = !!e.data.hand;
+    ray.visible = !input.isHand;
+  });
+  controller.addEventListener('disconnected', () => {
+    if (holder?.input === input) release();
+    if (teleportInput === input) { teleportInput = null; marker.visible = false; }
+    input.handedness = '';
+    input.pinching = false;
+  });
+
+  // Gatilho: esquerdo teleporta, direito pega (de perto ou mirando)
+  controller.addEventListener('selectstart', () => {
+    if (input.isHand) return;
+    if (input.handedness === 'left') {
+      teleportInput = input;
+      ray.material.color.set(0x2fd8a0);
+    } else {
+      tryGrab(input, grip, grip.getWorldPosition(tmpVec), 'select', true);
+    }
+  });
+  controller.addEventListener('selectend', () => {
+    if (input.isHand) return;
+    if (teleportInput === input) {
+      if (marker.visible) teleportTo(marker.position);
+      teleportInput = null;
+      marker.visible = false;
+      ray.material.color.set(0xffffff);
+    }
+    if (holder?.input === input && holder.button === 'select') release();
+  });
+
+  // Botão lateral (grip): pega de perto com qualquer controle
+  controller.addEventListener('squeezestart', () => {
+    if (!input.isHand) tryGrab(input, grip, grip.getWorldPosition(tmpVec), 'squeeze', false);
+  });
+  controller.addEventListener('squeezeend', () => {
+    if (holder?.input === input && holder.button === 'squeeze') release();
+  });
+}
+
+// Pinça (polegar + indicador) com hand tracking
+const pinchPoint = new THREE.Vector3();
+function updateHands() {
+  for (const input of inputs) {
+    if (!input.isHand) continue;
+    const j = input.hand.joints;
+    const index = j['index-finger-tip'], thumb = j['thumb-tip'], wrist = j['wrist'];
+    if (!index || !thumb || !wrist || !index.visible) continue;
+
+    const d = index.position.distanceTo(thumb.position);
+    if (!input.pinching && d < 0.02) {
+      input.pinching = true;
+      index.getWorldPosition(pinchPoint).add(thumb.getWorldPosition(tmpVec)).multiplyScalar(0.5);
+      tryGrab(input, wrist, pinchPoint, 'pinch', false);
+    } else if (input.pinching && d > 0.04) {
+      input.pinching = false;
+      if (holder?.input === input) release();
+    }
+  }
+}
+
+function updateTeleport() {
+  if (!teleportInput) return;
+  setRayFrom(teleportInput.controller);
+  const hit = raycaster.intersectObject(floor)[0];
+  marker.visible = !!hit && !insideTable(hit.point);
+  if (marker.visible) marker.position.set(hit.point.x, 0.01, hit.point.z);
+}
+
+// Queda simples do jornal: para na mesa ou no chão
+function updateFalling(dt) {
+  if (!falling) return;
+  fallSpeed += 9.8 * dt;
+  jornal.position.y -= fallSpeed * dt;
+  const p = jornal.position;
+  const overTable = Math.abs(p.x - TABLE.x) < TABLE.w / 2 && Math.abs(p.z - TABLE.z) < TABLE.d / 2 && p.y > TABLE.h - 0.05;
+  const restY = (overTable ? TABLE.h : 0) + 0.006;
+  if (p.y <= restY) {
+    p.y = restY;
+    const yaw = new THREE.Euler().setFromQuaternion(jornal.quaternion, 'YXZ').y;
+    jornal.rotation.set(0, yaw, 0);
+    falling = false;
+  }
+}
+
+// ---------- Loop ----------
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  updateHands();
+  updateTeleport();
+  updateFalling(dt);
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Texturas desenhadas em canvas ----------
+function floorTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 8; i++) {
+    g.fillStyle = `hsl(28, 35%, ${38 + Math.random() * 8}%)`;
+    g.fillRect(0, i * 64, 512, 64);
+    g.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    g.fillRect(0, i * 64, 512, 2);
+    g.fillRect(Math.random() * 512, i * 64, 2, 64);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(3, 3);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function jornalTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 717;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f3efe4';
+  g.fillRect(0, 0, c.width, c.height);
+
+  g.fillStyle = '#111';
+  g.textAlign = 'center';
+  g.font = 'bold 64px Georgia, serif';
+  g.fillText('JORNAL HOJE', 256, 80);
+  g.fillRect(24, 100, 464, 4);
+  g.font = '20px Georgia, serif';
+  g.fillText(new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }), 256, 130);
+  g.fillRect(24, 145, 464, 2);
+  g.font = 'bold 36px Georgia, serif';
+  g.fillText('Pegue o jornal para', 256, 200);
+  g.fillText('ouvir as notícias', 256, 245);
+
+  g.fillStyle = '#9aa3ab';
+  g.fillRect(24, 270, 280, 180);
+  g.fillStyle = '#666';
+  for (let y = 275; y < 450; y += 14) g.fillRect(320, y, 168, 6);
+  for (let y = 470; y < 695; y += 14) {
+    g.fillRect(24, y, 224, 6);
+    g.fillRect(264, y, 224, 6);
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+</script>
+</body>
+</html>
